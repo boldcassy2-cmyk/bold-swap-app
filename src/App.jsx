@@ -1,122 +1,129 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useState } from 'react';
+import { BrowserProvider, formatEther } from 'ethers';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [account, setAccount] = useState(null);
+  const [balance, setBalance] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const connectWallet = async () => {
+    setError('');
+    
+    // Check if a Web3 browser extension (e.g., MetaMask) is installed
+    if (!window.ethereum) {
+      setError('No crypto wallet detected. Please install MetaMask.');
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Initialize the Ethers v6 BrowserProvider
+      const provider = new BrowserProvider(window.ethereum);
+
+      // Request account access from the wallet popup
+      const accounts = await provider.send("eth_requestAccounts", []);
+      const userAddress = accounts[0];
+
+      // Get current wallet ETH balance
+      const rawBalance = await provider.getBalance(userAddress);
+      const formattedBalance = formatEther(rawBalance);
+
+      setAccount(userAddress);
+      setBalance(parseFloat(formattedBalance).toFixed(4));
+    } catch (err) {
+      console.error('Connection error:', err);
+      setError('Failed to connect wallet. Connection request was rejected.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const disconnectWallet = () => {
+    setAccount(null);
+    setBalance(null);
+  };
+
+  // Helper function to truncate wallet addresses (0x1234...abcd)
+  const formatAddress = (addr) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div style={styles.container}>
+      <header style={styles.card}>
+        <h1>Web3 DApp</h1>
+        <p>Connect your wallet to interact with the blockchain.</p>
 
-      <div className="ticks"></div>
+        {error && <p style={styles.error}>{error}</p>}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+        {!account ? (
+          <button 
+            style={styles.button} 
+            onClick={connectWallet} 
+            disabled={loading}
+          >
+            {loading ? 'Connecting...' : 'Connect Wallet'}
+          </button>
+        ) : (
+          <div style={styles.walletInfo}>
+            <p><strong>Address:</strong> {formatAddress(account)}</p>
+            <p><strong>Balance:</strong> {balance} ETH</p>
+            <button style={{ ...styles.button, ...styles.disconnectBtn }} onClick={disconnectWallet}>
+              Disconnect
+            </button>
+          </div>
+        )}
+      </header>
+    </div>
+  );
 }
 
-export default App
+// Inline styles for clean layout
+const styles = {
+  container: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    minHeight: '100vh',
+    backgroundColor: '#0f172a',
+    color: '#f8fafc',
+    fontFamily: 'sans-serif'
+  },
+  card: {
+    padding: '2.5rem',
+    borderRadius: '12px',
+    backgroundColor: '#1e293b',
+    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.3)',
+    textAlign: 'center',
+    maxWidth: '400px',
+    width: '100%'
+  },
+  button: {
+    padding: '0.75rem 1.5rem',
+    fontSize: '1rem',
+    fontWeight: 'bold',
+    color: '#ffffff',
+    backgroundColor: '#2563eb',
+    border: 'none',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    marginTop: '1rem',
+    transition: 'background-color 0.2s'
+  },
+  disconnectBtn: {
+    backgroundColor: '#dc2626'
+  },
+  walletInfo: {
+    marginTop: '1rem',
+    padding: '1rem',
+    backgroundColor: '#334155',
+    borderRadius: '8px'
+  },
+  error: {
+    color: '#f87171',
+    fontSize: '0.875rem',
+    marginTop: '0.5rem'
+  }
+};
+
+export default App;
