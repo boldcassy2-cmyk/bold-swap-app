@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { BrowserProvider, Contract, parseUnits, formatUnits, isAddress } from 'ethers';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 
-// Optional: Enter your fee recipient address here
 const MY_FEE_RECIPIENT = ""; 
-
 const NATIVE_ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+const QUOTE_EXPIRY_SECONDS = 30;
 
 const DEFAULT_TOKENS = [
   { symbol: "ETH", name: "Ethereum", address: NATIVE_ETH, decimals: 18 },
@@ -36,6 +35,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
 
+  const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
+  const timerRef = useRef(null);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState('sell');
   const [walletModalOpen, setWalletModalOpen] = useState(false);
@@ -52,6 +54,33 @@ function App() {
     }
   }, []);
 
+  // Clear quote and reset timer if swap inputs change
+  useEffect(() => {
+    setQuote(null);
+    clearInterval(timerRef.current);
+  }, [sellToken, buyToken, sellAmount]);
+
+  // Handle countdown timer and auto-refresh
+  useEffect(() => {
+    if (!quote) return;
+
+    setTimeLeft(QUOTE_EXPIRY_SECONDS);
+    clearInterval(timerRef.current);
+
+    timerRef.current = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          getSwapQuote(true); // Auto-refresh quote
+          return QUOTE_EXPIRY_SECONDS;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timerRef.current);
+  }, [quote]);
+
   const selectToken = (token) => {
     if (modalMode === 'sell') {
       setSellToken(token);
@@ -64,7 +93,7 @@ function App() {
     setSearchQuery('');
   };
 
-  const getSwapQuote = async () => {
+  const getSwapQuote = async (isAutoRefresh = false) => {
     if (!isConnected || !account) {
       setWalletModalOpen(true);
       return;
@@ -76,8 +105,7 @@ function App() {
     }
 
     setLoading(true);
-    setQuote(null);
-    setStatus("Fetching quote from Base network...");
+    setStatus(isAutoRefresh ? "Refreshing quote..." : "Fetching quote from Base network...");
 
     try {
       const sellAmountWei = parseUnits(sellAmount, sellToken.decimals).toString();
@@ -113,10 +141,11 @@ function App() {
       }
 
       setQuote(data);
-      setStatus("Quote ready!");
+      setStatus("Quote updated!");
     } catch (err) {
       console.error("Quote Error:", err);
       setStatus(`Quote Error: ${err.message}`);
+      setQuote(null);
     } finally {
       setLoading(false);
     }
@@ -125,12 +154,12 @@ function App() {
   const executeSwap = async () => {
     if (!quote?.transaction || !window.ethereum) return;
     setLoading(true);
+    clearInterval(timerRef.current);
 
     try {
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
 
-      // Check allowance for ERC-20 tokens
       if (sellToken.address.toLowerCase() !== NATIVE_ETH.toLowerCase() && quote.issues?.allowance) {
         const { spender } = quote.issues.allowance;
         const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
@@ -162,6 +191,7 @@ function App() {
       setStatus(`Tx submitted: ${tx.hash}`);
       await tx.wait();
       setStatus('Swap successful! 🎉');
+      setQuote(null);
     } catch (err) {
       console.error("Swap Execution Error:", err);
       if (
@@ -182,6 +212,8 @@ function App() {
     t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) || 
     t.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const progressPercent = (timeLeft / QUOTE_EXPIRY_SECONDS) * 100;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
@@ -251,7 +283,7 @@ function App() {
           </button>
         ) : (
           <button 
-            onClick={getSwapQuote} 
+            onClick={() => getSwapQuote(false)} 
             disabled={loading}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors"
           >
@@ -259,8 +291,28 @@ function App() {
           </button>
         )}
 
+        {/* Active Quote Panel with Countdown Progress Bar */}
         {quote && (
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-3">
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-3 space-y-3">
+            <div className="flex justify-between items-center text-xs font-mono text-slate-400">
+              <span>Quote expires in: <strong className="text-amber-400">{timeLeft}s</strong></span>
+              <button 
+                onClick={() => getSwapQuote(true)}
+                disabled={loading}
+                className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+              >
+                Refresh
+              </button>
+            </div>
+
+            {/* Progress Bar */}
+            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+              <div 
+                className="bg-amber-400 h-full transition-all duration-1000 ease-linear"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
+
             <button 
               onClick={executeSwap}
               disabled={loading}
