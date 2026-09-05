@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { BrowserProvider, Contract, parseUnits, formatUnits, isAddress } from 'ethers';
 import { useAccount, useConnect, useDisconnect } from 'wagmi';
 
-const MY_FEE_RECIPIENT = ""; 
+const MY_FEE_RECIPIENT = "0xfa06f50dFC00D333D29f56862a19d5a1c4F87490"; 
 const NATIVE_ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 const QUOTE_EXPIRY_SECONDS = 30;
 
@@ -36,6 +36,10 @@ function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState('');
 
+  // Slippage State (Stored as percentage: 0.5 = 0.5%)
+  const [slippage, setSlippage] = useState('0.5');
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+
   const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
   const timerRef = useRef(null);
 
@@ -59,7 +63,7 @@ function App() {
   useEffect(() => {
     setQuote(null);
     if (timerRef.current) clearInterval(timerRef.current);
-  }, [sellToken, buyToken, sellAmount]);
+  }, [sellToken, buyToken, sellAmount, slippage]);
 
   // Handle countdown interval
   useEffect(() => {
@@ -121,12 +125,16 @@ function App() {
     try {
       const sellAmountWei = parseUnits(sellAmount, sellToken.decimals).toString();
 
+      // Convert percentage (0.5%) to basis points (50 bps)
+      const slippageBps = Math.round(parseFloat(slippage || '0.5') * 100).toString();
+
       const queryParams = {
         sellToken: sellToken.address,
         buyToken: buyToken.address,
         sellAmount: sellAmountWei,
         taker: account,
-        chainId: "8453"
+        chainId: "8453",
+        slippageBps: slippageBps
       };
 
       if (MY_FEE_RECIPIENT && isAddress(MY_FEE_RECIPIENT)) {
@@ -230,8 +238,20 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
+        
+        {/* Header */}
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-xl font-bold">Base DEX Swap</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-bold">Base DEX Swap</h1>
+            <button 
+              onClick={() => setSettingsModalOpen(true)}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer text-sm"
+              title="Slippage Settings"
+            >
+              ⚙️
+            </button>
+          </div>
+
           {!isConnected ? (
             <button 
               onClick={() => setWalletModalOpen(true)} 
@@ -283,6 +303,12 @@ function App() {
               {buyToken.symbol} <span className="text-xs">▼</span>
             </button>
           </div>
+        </div>
+
+        {/* Active Slippage Badge */}
+        <div className="flex justify-between items-center text-xs text-slate-400 px-1 mb-3">
+          <span>Slippage Tolerance:</span>
+          <span className="font-mono text-indigo-400 font-bold">{slippage}%</span>
         </div>
 
         {/* Action Button */}
@@ -338,6 +364,51 @@ function App() {
 
         {status && <p className="text-xs text-amber-400 text-center mt-2 font-mono break-words">{status}</p>}
       </div>
+
+      {/* SLIPPAGE SETTINGS MODAL */}
+      {settingsModalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-xs rounded-2xl p-5 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-base font-bold">Swap Settings</h2>
+              <button onClick={() => setSettingsModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+            </div>
+
+            <p className="text-xs text-slate-400 mb-3">Slippage Tolerance</p>
+            <div className="grid grid-cols-4 gap-2 mb-4">
+              {['0.1', '0.5', '1.0'].map((preset) => (
+                <button
+                  key={preset}
+                  onClick={() => setSlippage(preset)}
+                  className={`py-2 text-xs font-bold rounded-xl border transition-colors cursor-pointer ${
+                    slippage === preset 
+                      ? 'bg-indigo-600 border-indigo-500 text-white' 
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
+                  }`}
+                >
+                  {preset}%
+                </button>
+              ))}
+              <div className="relative">
+                <input
+                  type="number"
+                  placeholder="Custom"
+                  value={['0.1', '0.5', '1.0'].includes(slippage) ? '' : slippage}
+                  onChange={(e) => setSlippage(e.target.value)}
+                  className="w-full h-full bg-slate-950 border border-slate-800 text-xs text-center rounded-xl focus:outline-none focus:border-indigo-500 font-bold"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={() => setSettingsModalOpen(false)}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-xs font-bold py-2.5 rounded-xl transition-colors cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* WALLET SELECTION MODAL */}
       {walletModalOpen && (
