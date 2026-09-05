@@ -22,6 +22,34 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)"
 ];
 
+const getTokenLogo = (address) => {
+  if (address.toLowerCase() === NATIVE_ETH.toLowerCase()) {
+    return "https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/info/logo.png";
+  }
+  return `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/base/assets/${address}/logo.png`;
+};
+
+function TokenImage({ token, size = "w-6 h-6" }) {
+  const [error, setError] = useState(false);
+
+  if (error || !token.address) {
+    return (
+      <div className={`${size} rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-[10px] shrink-0`}>
+        {token.symbol.slice(0, 2)}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={getTokenLogo(token.address)}
+      alt={token.symbol}
+      className={`${size} rounded-full object-cover bg-slate-800 shrink-0`}
+      onError={() => setError(true)}
+    />
+  );
+}
+
 function App() {
   const { address: account, isConnected } = useAccount();
   const { connect, connectors, pendingConnector } = useConnect();
@@ -38,38 +66,45 @@ function App() {
   const [lastTxHash, setLastTxHash] = useState(null);
   const [txHistory, setTxHistory] = useState([]);
 
-  // Token Import State
+  // Token Approval & Allowance State
+  const [needApproval, setNeedApproval] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+
+  // Custom Import & Modals
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
+  const [slippage, setSlippage] = useState('0.5');
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalMode, setModalMode] = useState('sell');
+  const [walletModalOpen, setWalletModalOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  // Fetch Sell Token Balance
+  const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
+  const timerRef = useRef(null);
+
+  // Balances
   const { data: sellBalanceData } = useBalance({
     address: account,
     token: sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase() ? undefined : sellToken.address,
     watch: true,
   });
 
-  // Fetch Buy Token Balance
   const { data: buyBalanceData } = useBalance({
     address: account,
     token: buyToken.address.toLowerCase() === NATIVE_ETH.toLowerCase() ? undefined : buyToken.address,
     watch: true,
   });
 
-  // Slippage State
-  const [slippage, setSlippage] = useState('0.5');
-  const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  // Balance Check
+  const hasInsufficientBalance = Boolean(
+    sellBalanceData &&
+    sellAmount &&
+    Number(sellAmount) > Number(sellBalanceData.formatted)
+  );
 
-  const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
-  const timerRef = useRef(null);
-
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalMode, setModalMode] = useState('sell');
-  const [walletModalOpen, setWalletModalOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-
-  // Load custom tokens & tx history on launch
+  // Load Saved Tokens & History
   useEffect(() => {
     const savedTokens = localStorage.getItem('custom_dex_tokens');
     if (savedTokens) {
@@ -85,18 +120,19 @@ function App() {
       try {
         setTxHistory(JSON.parse(savedHistory));
       } catch (e) {
-        console.error("Failed to load transaction history", e);
+        console.error("Failed to load history", e);
       }
     }
   }, []);
 
-  // Clear quote and stop timer on input change
+  // Clear Quote on Parameter Change
   useEffect(() => {
     setQuote(null);
+    setNeedApproval(false);
     if (timerRef.current) clearInterval(timerRef.current);
   }, [sellToken, buyToken, sellAmount, slippage]);
 
-  // Handle countdown interval
+  // Quote Expiry Timer
   useEffect(() => {
     if (!quote) {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -121,7 +157,32 @@ function App() {
     };
   }, [quote?.buyAmount, quote?.sellAmount]);
 
-  // Handle custom token detection when address is pasted in search
+  // Check Allowance When Quote Loaded
+  useEffect(() => {
+    const checkAllowance = async () => {
+      if (!quote || !account || sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase()) {
+        setNeedApproval(false);
+        return;
+      }
+
+      if (quote.issues?.allowance?.spender && window.ethereum) {
+        try {
+          const provider = new BrowserProvider(window.ethereum);
+          const tokenContract = new Contract(sellToken.address, ERC20_ABI, provider);
+          const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
+          const currentAllowance = await tokenContract.allowance(account, quote.issues.allowance.spender);
+
+          setNeedApproval(BigInt(currentAllowance) < BigInt(requiredAmount));
+        } catch (err) {
+          console.error("Allowance check error:", err);
+        }
+      }
+    };
+
+    checkAllowance();
+  }, [quote, account, sellToken, sellAmount]);
+
+  // Import Custom Token via Contract Address
   useEffect(() => {
     const checkAndImportToken = async () => {
       const cleanQuery = searchQuery.trim();
@@ -133,7 +194,7 @@ function App() {
       if (exists) return;
 
       if (!window.ethereum) {
-        setImportError("Ethereum provider missing to fetch token info.");
+        setImportError("Ethereum provider missing.");
         return;
       }
 
@@ -162,10 +223,9 @@ function App() {
 
         setTokens((prev) => [...prev, newToken]);
         setSearchQuery('');
-        setImportError('');
       } catch (err) {
         console.error("Token fetch error:", err);
-        setImportError("Could not fetch ERC-20 token info from this address.");
+        setImportError("Could not fetch ERC-20 token info.");
       } finally {
         setImporting(false);
       }
@@ -173,6 +233,14 @@ function App() {
 
     checkAndImportToken();
   }, [searchQuery, tokens]);
+
+  // Flip Tokens
+  const handleSwitchTokens = () => {
+    const prevSell = sellToken;
+    const prevBuy = buyToken;
+    setSellToken(prevBuy);
+    setBuyToken(prevSell);
+  };
 
   const selectToken = (token) => {
     if (modalMode === 'sell') {
@@ -184,12 +252,10 @@ function App() {
     }
     setModalOpen(false);
     setSearchQuery('');
-    setImportError('');
   };
 
   const handleMaxClick = () => {
     if (!sellBalanceData) return;
-
     const rawBalance = Number(sellBalanceData.formatted);
 
     if (sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase()) {
@@ -218,7 +284,7 @@ function App() {
       setQuote(null);
     }
 
-    setStatus(isRefresh ? "Refreshing quote..." : "Fetching quote from Base network...");
+    setStatus(isRefresh ? "Refreshing quote..." : "Fetching optimal route...");
     setLastTxHash(null);
 
     try {
@@ -246,7 +312,7 @@ function App() {
       const contentType = response.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
         const rawText = await response.text();
-        throw new Error(`Server returned non-JSON response (${response.status}): ${rawText.slice(0, 100)}`);
+        throw new Error(`Server response error (${response.status}): ${rawText.slice(0, 100)}`);
       }
 
       const data = await response.json();
@@ -268,6 +334,30 @@ function App() {
     }
   };
 
+  const approveToken = async () => {
+    if (!quote?.issues?.allowance?.spender || !window.ethereum) return;
+    setIsApproving(true);
+    setStatus(`Approving ${sellToken.symbol}...`);
+
+    try {
+      const provider = new BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
+      const tokenContract = new Contract(sellToken.address, ERC20_ABI, signer);
+
+      const tx = await tokenContract.approve(quote.issues.allowance.spender, requiredAmount);
+      await tx.wait();
+
+      setNeedApproval(false);
+      setStatus(`${sellToken.symbol} Approved! You can now execute the swap.`);
+    } catch (err) {
+      console.error("Approval Error:", err);
+      setStatus(`Approval Failed: ${err.reason || err.message}`);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
   const executeSwap = async () => {
     if (!quote?.transaction || !window.ethereum) return;
     setLoading(true);
@@ -278,21 +368,7 @@ function App() {
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
 
-      if (sellToken.address.toLowerCase() !== NATIVE_ETH.toLowerCase() && quote.issues?.allowance) {
-        const { spender } = quote.issues.allowance;
-        const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
-        
-        const tokenContract = new Contract(sellToken.address, ERC20_ABI, signer);
-        const currentAllowance = await tokenContract.allowance(account, spender);
-
-        if (BigInt(currentAllowance) < BigInt(requiredAmount)) {
-          setStatus(`Approving ${sellToken.symbol}...`);
-          const approveTx = await tokenContract.approve(spender, requiredAmount);
-          await approveTx.wait();
-        }
-      }
-
-      setStatus('Awaiting wallet confirmation...');
+      setStatus('Awaiting wallet signature...');
       
       const txParams = {
         to: quote.transaction.to,
@@ -306,13 +382,12 @@ function App() {
 
       const tx = await signer.sendTransaction(txParams);
       setLastTxHash(tx.hash);
-      setStatus(`Tx submitted... Waiting for confirmation.`);
+      setStatus(`Tx submitted... Waiting on Base network confirmation.`);
 
       await tx.wait();
 
-      setStatus('Swap successful! 🎉');
+      setStatus('Swap executed successfully! 🎉');
 
-      // Add to transaction history
       const newTxRecord = {
         hash: tx.hash,
         sellSymbol: sellToken.symbol,
@@ -328,13 +403,9 @@ function App() {
 
       setQuote(null);
     } catch (err) {
-      console.error("Swap Execution Error:", err);
-      if (
-        err.code === 4001 || 
-        err?.info?.error?.code === 4001 || 
-        err?.code === 'ACTION_REJECTED'
-      ) {
-        setStatus('Transaction canceled in wallet.');
+      console.error("Execution Error:", err);
+      if (err.code === 4001 || err?.info?.error?.code === 4001 || err?.code === 'ACTION_REJECTED') {
+        setStatus('Transaction rejected in wallet.');
       } else {
         setStatus(`Execution failed: ${err.reason || err.message}`);
       }
@@ -350,6 +421,7 @@ function App() {
   );
 
   const progressPercent = (timeLeft / QUOTE_EXPIRY_SECONDS) * 100;
+  const priceImpactVal = quote?.estimatedPriceImpact ? Number(quote.estimatedPriceImpact) * 100 : 0;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
@@ -358,7 +430,7 @@ function App() {
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold">Base DEX Swap</h1>
+            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">Base Swap</h1>
             <button 
               onClick={() => setSettingsModalOpen(true)}
               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer text-sm"
@@ -378,7 +450,7 @@ function App() {
           {!isConnected ? (
             <button 
               onClick={() => setWalletModalOpen(true)} 
-              className="bg-indigo-600 hover:bg-indigo-500 text-xs font-bold py-2 px-3 rounded-xl cursor-pointer transition-colors"
+              className="bg-indigo-600 hover:bg-indigo-500 text-xs font-bold py-2 px-3 rounded-xl cursor-pointer transition-colors shadow-lg shadow-indigo-500/20"
             >
               Connect Wallet
             </button>
@@ -392,8 +464,8 @@ function App() {
           )}
         </div>
 
-        {/* You Pay */}
-        <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-3">
+        {/* You Pay Box */}
+        <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
           <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
             <span>You Pay</span>
             {isConnected && (
@@ -413,19 +485,33 @@ function App() {
               type="number" 
               value={sellAmount} 
               onChange={(e) => setSellAmount(e.target.value)}
-              className="w-full bg-transparent text-xl font-bold focus:outline-none"
+              className="w-full bg-transparent text-2xl font-bold focus:outline-none"
               placeholder="0.0"
             />
             <button 
               onClick={() => { setModalMode('sell'); setModalOpen(true); }}
-              className="bg-slate-800 hover:bg-slate-700 text-sm font-bold border border-slate-700 rounded-lg px-3 py-1.5 cursor-pointer flex items-center gap-1 transition-colors"
+              className="bg-slate-800 hover:bg-slate-700 text-sm font-bold border border-slate-700 rounded-xl px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-colors shrink-0"
             >
-              {sellToken.symbol} <span className="text-xs">▼</span>
+              <TokenImage token={sellToken} size="w-5 h-5" />
+              <span>{sellToken.symbol}</span>
+              <span className="text-xs text-slate-400">▼</span>
             </button>
           </div>
         </div>
 
-        {/* You Receive */}
+        {/* Direction Switcher Button */}
+        <div className="flex justify-center -my-3 z-10 relative">
+          <button
+            type="button"
+            onClick={handleSwitchTokens}
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-indigo-400 p-2 rounded-xl transition-all cursor-pointer shadow-lg hover:scale-110 active:scale-95"
+            title="Switch Swap Direction"
+          >
+            ⇅
+          </button>
+        </div>
+
+        {/* You Receive Box */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-4">
           <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
             <span>You Receive (Estimated)</span>
@@ -436,47 +522,92 @@ function App() {
             )}
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xl font-bold text-emerald-400">
+            <span className="text-2xl font-bold text-emerald-400">
               {quote ? Number(formatUnits(quote.buyAmount, buyToken.decimals)).toFixed(4) : '0.00'}
             </span>
             <button 
               onClick={() => { setModalMode('buy'); setModalOpen(true); }}
-              className="bg-slate-800 hover:bg-slate-700 text-sm font-bold border border-slate-700 rounded-lg px-3 py-1.5 cursor-pointer flex items-center gap-1 transition-colors"
+              className="bg-slate-800 hover:bg-slate-700 text-sm font-bold border border-slate-700 rounded-xl px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-colors shrink-0"
             >
-              {buyToken.symbol} <span className="text-xs">▼</span>
+              <TokenImage token={buyToken} size="w-5 h-5" />
+              <span>{buyToken.symbol}</span>
+              <span className="text-xs text-slate-400">▼</span>
             </button>
           </div>
         </div>
 
-        {/* Active Slippage Badge */}
-        <div className="flex justify-between items-center text-xs text-slate-400 px-1 mb-3">
-          <span>Slippage Tolerance:</span>
-          <span className="font-mono text-indigo-400 font-bold">{slippage}%</span>
+        {/* High Price Impact Alert */}
+        {priceImpactVal > 2 && (
+          <div className={`p-3 rounded-xl border text-xs font-mono mb-3 ${
+            priceImpactVal > 5 
+              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' 
+              : 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+          }`}>
+            ⚠️ High Price Impact: <strong>{priceImpactVal.toFixed(2)}%</strong>. High slippage loss expected!
+          </div>
+        )}
+
+        {/* Slippage & Gas Estimate Summary */}
+        <div className="flex justify-between items-center text-xs text-slate-400 px-1 mb-3 font-mono">
+          <span>Slippage: <strong className="text-indigo-400">{slippage}%</strong></span>
+          {quote?.transaction?.gas && (
+            <span>Est. Gas: <strong className="text-slate-200">~${(Number(quote.transaction.gas) * 0.00000002).toFixed(4)}</strong></span>
+          )}
         </div>
 
-        {/* Action Button */}
+        {/* Dynamic Action Button */}
         {!isConnected ? (
           <button 
             onClick={() => setWalletModalOpen(true)}
-            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors"
+            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-indigo-500/20"
           >
             Connect Wallet
           </button>
-        ) : (
+        ) : !sellAmount || Number(sellAmount) <= 0 ? (
+          <button 
+            disabled 
+            className="w-full bg-slate-800 text-slate-500 font-bold py-3 rounded-xl mb-3"
+          >
+            Enter Amount
+          </button>
+        ) : hasInsufficientBalance ? (
+          <button 
+            disabled 
+            className="w-full bg-rose-900/40 border border-rose-800/50 text-rose-400 font-bold py-3 rounded-xl mb-3 cursor-not-allowed"
+          >
+            Insufficient {sellToken.symbol} Balance
+          </button>
+        ) : !quote ? (
           <button 
             onClick={() => fetchQuote(false)} 
             disabled={loading}
-            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors"
+            className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-emerald-600/20"
           >
             {loading ? 'Fetching Quote...' : 'Get Quote'}
           </button>
+        ) : needApproval ? (
+          <button 
+            onClick={approveToken}
+            disabled={isApproving}
+            className="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-amber-600/20"
+          >
+            {isApproving ? `Approving ${sellToken.symbol}...` : `Approve ${sellToken.symbol}`}
+          </button>
+        ) : (
+          <button 
+            onClick={executeSwap}
+            disabled={loading}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-indigo-600/20"
+          >
+            {loading ? 'Processing Swap...' : 'Execute Swap'}
+          </button>
         )}
 
-        {/* Active Quote Panel with Countdown Progress Bar */}
+        {/* Active Quote Refresh Panel */}
         {quote && (
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-3 space-y-3">
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-3 space-y-2">
             <div className="flex justify-between items-center text-xs font-mono text-slate-400">
-              <span>Quote expires in: <strong className="text-amber-400">{timeLeft}s</strong></span>
+              <span>Quote Refresh: <strong className="text-amber-400">{timeLeft}s</strong></span>
               <button 
                 type="button"
                 onClick={() => fetchQuote(true)}
@@ -486,22 +617,12 @@ function App() {
                 {refreshing ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-
-            {/* Progress Bar */}
-            <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+            <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden">
               <div 
                 className="bg-amber-400 h-full transition-all duration-1000 ease-linear"
                 style={{ width: `${progressPercent}%` }}
               />
             </div>
-
-            <button 
-              onClick={executeSwap}
-              disabled={loading}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl cursor-pointer transition-colors"
-            >
-              {loading ? 'Processing...' : 'Execute Swap'}
-            </button>
           </div>
         )}
 
@@ -529,7 +650,7 @@ function App() {
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-bold">Recent Swaps</h2>
-              <button onClick={() => setHistoryModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+              <button onClick={() => setHistoryModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
             </div>
 
             {txHistory.length === 0 ? (
@@ -564,7 +685,7 @@ function App() {
           <div className="bg-slate-900 border border-slate-800 w-full max-w-xs rounded-2xl p-5 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-bold">Swap Settings</h2>
-              <button onClick={() => setSettingsModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+              <button onClick={() => setSettingsModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
             </div>
 
             <p className="text-xs text-slate-400 mb-3">Slippage Tolerance</p>
@@ -609,7 +730,7 @@ function App() {
           <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-bold">Select Wallet</h2>
-              <button onClick={() => setWalletModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+              <button onClick={() => setWalletModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
             </div>
 
             <div className="space-y-2">
@@ -639,7 +760,7 @@ function App() {
           <div className="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-5 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-bold">Select Token</h2>
-              <button onClick={() => { setModalOpen(false); setImportError(''); }} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+              <button onClick={() => { setModalOpen(false); setImportError(''); }} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
             </div>
 
             <input 
@@ -665,14 +786,17 @@ function App() {
                   onClick={() => selectToken(token)}
                   className="p-3 bg-slate-950 hover:bg-slate-800 rounded-xl cursor-pointer flex justify-between items-center transition-colors border border-slate-800/50"
                 >
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-bold">{token.symbol}</p>
-                      {token.isCustom && (
-                        <span className="bg-indigo-500/20 text-indigo-400 text-[9px] font-bold px-1.5 py-0.5 rounded">Custom</span>
-                      )}
+                  <div className="flex items-center gap-3">
+                    <TokenImage token={token} size="w-7 h-7" />
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm font-bold">{token.symbol}</p>
+                        {token.isCustom && (
+                          <span className="bg-indigo-500/20 text-indigo-400 text-[9px] font-bold px-1.5 py-0.5 rounded">Custom</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400">{token.name}</p>
                     </div>
-                    <p className="text-xs text-slate-400">{token.name}</p>
                   </div>
                   <span className="text-[10px] font-mono text-slate-500">{token.address.slice(0, 6)}...{token.address.slice(-4)}</span>
                 </div>
