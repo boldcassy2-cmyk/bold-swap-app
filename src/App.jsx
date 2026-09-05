@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { BrowserProvider, Contract, parseUnits, formatUnits, isAddress } from 'ethers';
-import { useAccount, useConnect, useDisconnect } from 'wagmi';
+import { useAccount, useConnect, useDisconnect, useBalance } from 'wagmi';
 
 const MY_FEE_RECIPIENT = "0xfa06f50dFC00D333D29f56862a19d5a1c4F87490"; 
 const NATIVE_ETH = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
@@ -35,6 +35,20 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState('');
+
+  // Fetch Sell Token Balance
+  const { data: sellBalanceData } = useBalance({
+    address: account,
+    token: sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase() ? undefined : sellToken.address,
+    watch: true,
+  });
+
+  // Fetch Buy Token Balance
+  const { data: buyBalanceData } = useBalance({
+    address: account,
+    token: buyToken.address.toLowerCase() === NATIVE_ETH.toLowerCase() ? undefined : buyToken.address,
+    watch: true,
+  });
 
   // Slippage State (Stored as percentage: 0.5 = 0.5%)
   const [slippage, setSlippage] = useState('0.5');
@@ -102,6 +116,20 @@ function App() {
     setSearchQuery('');
   };
 
+  const handleMaxClick = () => {
+    if (!sellBalanceData) return;
+
+    const rawBalance = Number(sellBalanceData.formatted);
+
+    if (sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase()) {
+      // Leave 0.002 ETH for gas
+      const maxEth = Math.max(0, rawBalance - 0.002);
+      setSellAmount(maxEth > 0 ? maxEth.toFixed(6) : '0');
+    } else {
+      setSellAmount(rawBalance.toString());
+    }
+  };
+
   const fetchQuote = async (isRefresh = false) => {
     if (!isConnected || !account) {
       setWalletModalOpen(true);
@@ -124,8 +152,6 @@ function App() {
 
     try {
       const sellAmountWei = parseUnits(sellAmount, sellToken.decimals).toString();
-
-      // Convert percentage (0.5%) to basis points (50 bps)
       const slippageBps = Math.round(parseFloat(slippage || '0.5') * 100).toString();
 
       const queryParams = {
@@ -271,7 +297,20 @@ function App() {
 
         {/* You Pay */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-3">
-          <div className="text-xs text-slate-400 mb-2">You Pay</div>
+          <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
+            <span>You Pay</span>
+            {isConnected && (
+              <div className="flex items-center gap-1.5 font-mono">
+                <span>Balance: {sellBalanceData ? Number(sellBalanceData.formatted).toFixed(4) : '0.00'}</span>
+                <button
+                  onClick={handleMaxClick}
+                  className="bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 text-[10px] font-bold px-1.5 py-0.5 rounded transition-colors cursor-pointer"
+                >
+                  MAX
+                </button>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <input 
               type="number" 
@@ -291,7 +330,14 @@ function App() {
 
         {/* You Receive */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-4">
-          <div className="text-xs text-slate-400 mb-2">You Receive (Estimated)</div>
+          <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
+            <span>You Receive (Estimated)</span>
+            {isConnected && (
+              <span className="font-mono">
+                Balance: {buyBalanceData ? Number(buyBalanceData.formatted).toFixed(4) : '0.00'}
+              </span>
+            )}
+          </div>
           <div className="flex items-center justify-between">
             <span className="text-xl font-bold text-emerald-400">
               {quote ? Number(formatUnits(quote.buyAmount, buyToken.decimals)).toFixed(4) : '0.00'}
