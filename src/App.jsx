@@ -130,6 +130,7 @@ function App() {
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
 
+      // Check allowance for ERC-20 tokens
       if (sellToken.address.toLowerCase() !== NATIVE_ETH.toLowerCase() && quote.issues?.allowance) {
         const { spender } = quote.issues.allowance;
         const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
@@ -144,7 +145,7 @@ function App() {
         }
       }
 
-      setStatus('Submitting transaction on Base...');
+      setStatus('Awaiting wallet confirmation...');
       
       const txParams = {
         to: quote.transaction.to,
@@ -160,10 +161,18 @@ function App() {
 
       setStatus(`Tx submitted: ${tx.hash}`);
       await tx.wait();
-      setStatus('Swap successful!');
+      setStatus('Swap successful! 🎉');
     } catch (err) {
       console.error("Swap Execution Error:", err);
-      setStatus(`Execution failed: ${err.message}`);
+      if (
+        err.code === 4001 || 
+        err?.info?.error?.code === 4001 || 
+        err?.code === 'ACTION_REJECTED'
+      ) {
+        setStatus('Transaction canceled in wallet.');
+      } else {
+        setStatus(`Execution failed: ${err.reason || err.message}`);
+      }
     } finally {
       setLoading(false);
     }
