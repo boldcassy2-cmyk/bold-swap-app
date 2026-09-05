@@ -33,6 +33,7 @@ function App() {
   const [sellAmount, setSellAmount] = useState('0.005');
   const [quote, setQuote] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState('');
 
   const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
@@ -54,32 +55,36 @@ function App() {
     }
   }, []);
 
-  // Clear quote and reset timer if swap inputs change
+  // Clear quote and stop timer on input change
   useEffect(() => {
     setQuote(null);
-    clearInterval(timerRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
   }, [sellToken, buyToken, sellAmount]);
 
-  // Handle countdown timer and auto-refresh
+  // Handle countdown interval
   useEffect(() => {
-    if (!quote) return;
+    if (!quote) {
+      if (timerRef.current) clearInterval(timerRef.current);
+      return;
+    }
 
     setTimeLeft(QUOTE_EXPIRY_SECONDS);
-    clearInterval(timerRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
 
     timerRef.current = setInterval(() => {
       setTimeLeft((prev) => {
         if (prev <= 1) {
-          clearInterval(timerRef.current);
-          getSwapQuote(true); // Auto-refresh quote
+          fetchQuote(true);
           return QUOTE_EXPIRY_SECONDS;
         }
         return prev - 1;
       });
     }, 1000);
 
-    return () => clearInterval(timerRef.current);
-  }, [quote]);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [quote?.buyAmount, quote?.sellAmount]);
 
   const selectToken = (token) => {
     if (modalMode === 'sell') {
@@ -93,7 +98,7 @@ function App() {
     setSearchQuery('');
   };
 
-  const getSwapQuote = async (isAutoRefresh = false) => {
+  const fetchQuote = async (isRefresh = false) => {
     if (!isConnected || !account) {
       setWalletModalOpen(true);
       return;
@@ -104,8 +109,14 @@ function App() {
       return;
     }
 
-    setLoading(true);
-    setStatus(isAutoRefresh ? "Refreshing quote..." : "Fetching quote from Base network...");
+    if (isRefresh) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+      setQuote(null);
+    }
+
+    setStatus(isRefresh ? "Refreshing quote..." : "Fetching quote from Base network...");
 
     try {
       const sellAmountWei = parseUnits(sellAmount, sellToken.decimals).toString();
@@ -141,20 +152,21 @@ function App() {
       }
 
       setQuote(data);
+      setTimeLeft(QUOTE_EXPIRY_SECONDS);
       setStatus("Quote updated!");
     } catch (err) {
       console.error("Quote Error:", err);
       setStatus(`Quote Error: ${err.message}`);
-      setQuote(null);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
   const executeSwap = async () => {
     if (!quote?.transaction || !window.ethereum) return;
     setLoading(true);
-    clearInterval(timerRef.current);
+    if (timerRef.current) clearInterval(timerRef.current);
 
     try {
       const provider = new BrowserProvider(window.ethereum);
@@ -283,7 +295,7 @@ function App() {
           </button>
         ) : (
           <button 
-            onClick={() => getSwapQuote(false)} 
+            onClick={() => fetchQuote(false)} 
             disabled={loading}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors"
           >
@@ -297,11 +309,12 @@ function App() {
             <div className="flex justify-between items-center text-xs font-mono text-slate-400">
               <span>Quote expires in: <strong className="text-amber-400">{timeLeft}s</strong></span>
               <button 
-                onClick={() => getSwapQuote(true)}
-                disabled={loading}
-                className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                type="button"
+                onClick={() => fetchQuote(true)}
+                disabled={refreshing || loading}
+                className="text-indigo-400 hover:text-indigo-300 disabled:text-slate-600 underline cursor-pointer"
               >
-                Refresh
+                {refreshing ? "Refreshing..." : "Refresh"}
               </button>
             </div>
 
