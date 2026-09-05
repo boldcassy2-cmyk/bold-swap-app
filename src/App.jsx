@@ -35,6 +35,12 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [status, setStatus] = useState('');
+  const [lastTxHash, setLastTxHash] = useState(null);
+  const [txHistory, setTxHistory] = useState([]);
+
+  // Token Import State
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState('');
 
   // Fetch Sell Token Balance
   const { data: sellBalanceData } = useBalance({
@@ -50,9 +56,10 @@ function App() {
     watch: true,
   });
 
-  // Slippage State (Stored as percentage: 0.5 = 0.5%)
+  // Slippage State
   const [slippage, setSlippage] = useState('0.5');
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
   const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
   const timerRef = useRef(null);
@@ -62,6 +69,7 @@ function App() {
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Load custom tokens & tx history on launch
   useEffect(() => {
     const savedTokens = localStorage.getItem('custom_dex_tokens');
     if (savedTokens) {
@@ -69,6 +77,15 @@ function App() {
         setTokens([...DEFAULT_TOKENS, ...JSON.parse(savedTokens)]);
       } catch (e) {
         console.error("Failed to load custom tokens", e);
+      }
+    }
+
+    const savedHistory = localStorage.getItem('dex_tx_history');
+    if (savedHistory) {
+      try {
+        setTxHistory(JSON.parse(savedHistory));
+      } catch (e) {
+        console.error("Failed to load transaction history", e);
       }
     }
   }, []);
@@ -104,6 +121,59 @@ function App() {
     };
   }, [quote?.buyAmount, quote?.sellAmount]);
 
+  // Handle custom token detection when address is pasted in search
+  useEffect(() => {
+    const checkAndImportToken = async () => {
+      const cleanQuery = searchQuery.trim();
+      setImportError('');
+
+      if (!isAddress(cleanQuery)) return;
+
+      const exists = tokens.some(t => t.address.toLowerCase() === cleanQuery.toLowerCase());
+      if (exists) return;
+
+      if (!window.ethereum) {
+        setImportError("Ethereum provider missing to fetch token info.");
+        return;
+      }
+
+      setImporting(true);
+      try {
+        const provider = new BrowserProvider(window.ethereum);
+        const tokenContract = new Contract(cleanQuery, ERC20_ABI, provider);
+
+        const [symbol, name, decimals] = await Promise.all([
+          tokenContract.symbol(),
+          tokenContract.name(),
+          tokenContract.decimals()
+        ]);
+
+        const newToken = {
+          symbol: String(symbol),
+          name: String(name),
+          address: cleanQuery,
+          decimals: Number(decimals),
+          isCustom: true
+        };
+
+        const existingCustom = JSON.parse(localStorage.getItem('custom_dex_tokens') || '[]');
+        const updatedCustom = [...existingCustom, newToken];
+        localStorage.setItem('custom_dex_tokens', JSON.stringify(updatedCustom));
+
+        setTokens((prev) => [...prev, newToken]);
+        setSearchQuery('');
+        setImportError('');
+      } catch (err) {
+        console.error("Token fetch error:", err);
+        setImportError("Could not fetch ERC-20 token info from this address.");
+      } finally {
+        setImporting(false);
+      }
+    };
+
+    checkAndImportToken();
+  }, [searchQuery, tokens]);
+
   const selectToken = (token) => {
     if (modalMode === 'sell') {
       setSellToken(token);
@@ -114,6 +184,7 @@ function App() {
     }
     setModalOpen(false);
     setSearchQuery('');
+    setImportError('');
   };
 
   const handleMaxClick = () => {
@@ -122,7 +193,6 @@ function App() {
     const rawBalance = Number(sellBalanceData.formatted);
 
     if (sellToken.address.toLowerCase() === NATIVE_ETH.toLowerCase()) {
-      // Leave 0.002 ETH for gas
       const maxEth = Math.max(0, rawBalance - 0.002);
       setSellAmount(maxEth > 0 ? maxEth.toFixed(6) : '0');
     } else {
@@ -149,6 +219,7 @@ function App() {
     }
 
     setStatus(isRefresh ? "Refreshing quote..." : "Fetching quote from Base network...");
+    setLastTxHash(null);
 
     try {
       const sellAmountWei = parseUnits(sellAmount, sellToken.decimals).toString();
@@ -200,6 +271,7 @@ function App() {
   const executeSwap = async () => {
     if (!quote?.transaction || !window.ethereum) return;
     setLoading(true);
+    setLastTxHash(null);
     if (timerRef.current) clearInterval(timerRef.current);
 
     try {
@@ -233,10 +305,27 @@ function App() {
       }
 
       const tx = await signer.sendTransaction(txParams);
+      setLastTxHash(tx.hash);
+      setStatus(`Tx submitted... Waiting for confirmation.`);
 
-      setStatus(`Tx submitted: ${tx.hash}`);
       await tx.wait();
+
       setStatus('Swap successful! 🎉');
+
+      // Add to transaction history
+      const newTxRecord = {
+        hash: tx.hash,
+        sellSymbol: sellToken.symbol,
+        buySymbol: buyToken.symbol,
+        sellAmount: sellAmount,
+        buyAmount: formatUnits(quote.buyAmount, buyToken.decimals),
+        timestamp: new Date().toLocaleTimeString()
+      };
+
+      const updatedHistory = [newTxRecord, ...txHistory.slice(0, 9)];
+      setTxHistory(updatedHistory);
+      localStorage.setItem('dex_tx_history', JSON.stringify(updatedHistory));
+
       setQuote(null);
     } catch (err) {
       console.error("Swap Execution Error:", err);
@@ -256,7 +345,8 @@ function App() {
 
   const filteredTokens = tokens.filter(t => 
     t.symbol.toLowerCase().includes(searchQuery.toLowerCase()) || 
-    t.name.toLowerCase().includes(searchQuery.toLowerCase())
+    t.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    t.address.toLowerCase() === searchQuery.trim().toLowerCase()
   );
 
   const progressPercent = (timeLeft / QUOTE_EXPIRY_SECONDS) * 100;
@@ -275,6 +365,13 @@ function App() {
               title="Slippage Settings"
             >
               ⚙️
+            </button>
+            <button 
+              onClick={() => setHistoryModalOpen(true)}
+              className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer text-sm"
+              title="Transaction History"
+            >
+              📜
             </button>
           </div>
 
@@ -408,8 +505,58 @@ function App() {
           </div>
         )}
 
-        {status && <p className="text-xs text-amber-400 text-center mt-2 font-mono break-words">{status}</p>}
+        {/* Status Toast & BaseScan Link */}
+        {status && (
+          <div className="mt-3 text-center">
+            <p className="text-xs text-amber-400 font-mono break-words">{status}</p>
+            {lastTxHash && (
+              <a 
+                href={`https://basescan.org/tx/${lastTxHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block mt-2 text-xs font-mono text-indigo-400 hover:text-indigo-300 underline"
+              >
+                View on BaseScan ↗
+              </a>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* TRANSACTION HISTORY MODAL */}
+      {historyModalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-base font-bold">Recent Swaps</h2>
+              <button onClick={() => setHistoryModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+            </div>
+
+            {txHistory.length === 0 ? (
+              <p className="text-xs text-slate-500 text-center py-6 font-mono">No recent transactions.</p>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {txHistory.map((tx, idx) => (
+                  <div key={idx} className="bg-slate-950 border border-slate-800/80 p-3 rounded-xl flex justify-between items-center text-xs">
+                    <div>
+                      <p className="font-bold text-slate-200">{tx.sellAmount} {tx.sellSymbol} ➔ {Number(tx.buyAmount).toFixed(4)} {tx.buySymbol}</p>
+                      <p className="text-[10px] text-slate-500 font-mono">{tx.timestamp}</p>
+                    </div>
+                    <a 
+                      href={`https://basescan.org/tx/${tx.hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-400 hover:text-indigo-300 font-mono text-[10px] underline"
+                    >
+                      BaseScan ↗
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* SLIPPAGE SETTINGS MODAL */}
       {settingsModalOpen && (
@@ -492,18 +639,26 @@ function App() {
           <div className="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-5 shadow-2xl">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-base font-bold">Select Token</h2>
-              <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
+              <button onClick={() => { setModalOpen(false); setImportError(''); }} className="text-slate-400 hover:text-white text-lg font-bold">✕</button>
             </div>
 
             <input 
               type="text" 
-              placeholder="Search by name or symbol" 
+              placeholder="Search name or paste address (0x...)" 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 text-sm rounded-xl p-3 mb-4 focus:outline-none focus:border-indigo-500 font-mono text-slate-100"
+              className="w-full bg-slate-950 border border-slate-800 text-sm rounded-xl p-3 mb-2 focus:outline-none focus:border-indigo-500 font-mono text-slate-100"
             />
 
-            <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+            {importing && (
+              <p className="text-xs text-indigo-400 font-mono mb-3 animate-pulse">Fetching token contract details...</p>
+            )}
+
+            {importError && (
+              <p className="text-xs text-rose-400 font-mono mb-3">{importError}</p>
+            )}
+
+            <div className="max-h-64 overflow-y-auto space-y-2 pr-1 mt-3">
               {filteredTokens.map((token) => (
                 <div 
                   key={token.address}
@@ -511,7 +666,12 @@ function App() {
                   className="p-3 bg-slate-950 hover:bg-slate-800 rounded-xl cursor-pointer flex justify-between items-center transition-colors border border-slate-800/50"
                 >
                   <div>
-                    <p className="text-sm font-bold">{token.symbol}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-bold">{token.symbol}</p>
+                      {token.isCustom && (
+                        <span className="bg-indigo-500/20 text-indigo-400 text-[9px] font-bold px-1.5 py-0.5 rounded">Custom</span>
+                      )}
+                    </div>
                     <p className="text-xs text-slate-400">{token.name}</p>
                   </div>
                   <span className="text-[10px] font-mono text-slate-500">{token.address.slice(0, 6)}...{token.address.slice(-4)}</span>
