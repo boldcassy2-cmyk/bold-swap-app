@@ -97,9 +97,14 @@ function App() {
       }
 
       const params = new URLSearchParams(queryParams);
-      
-      // Calls Vite proxy endpoint set up in vite.config.js
       const response = await fetch(`/api-0x/swap/permit2/quote?${params.toString()}`);
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const rawText = await response.text();
+        throw new Error(`Server returned non-JSON response (${response.status}): ${rawText.slice(0, 100)}`);
+      }
+
       const data = await response.json();
 
       if (!response.ok || data.errors || data.reason) {
@@ -125,7 +130,6 @@ function App() {
       const provider = new BrowserProvider(window.ethereum);
       const signer = await provider.getSigner();
 
-      // Check ERC-20 Allowances if selling an ERC-20 token (skip for Native ETH)
       if (sellToken.address.toLowerCase() !== NATIVE_ETH.toLowerCase() && quote.issues?.allowance) {
         const { spender } = quote.issues.allowance;
         const requiredAmount = parseUnits(sellAmount, sellToken.decimals);
