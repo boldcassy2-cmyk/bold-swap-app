@@ -371,8 +371,8 @@ const apiKey = import.meta.env.VITE_ZEROX_API_KEY;
 const quoteUrl = `https://api.0x.org/swap/permit2/quote?${params.toString()}`;
 const response = await fetch(quoteUrl, {
   headers: {
-    '0x-api-key': apiKey
-  }
+    "0x-api-key": apiKey,
+  },
 });
 
 const contentType = response.headers.get("content-type");
