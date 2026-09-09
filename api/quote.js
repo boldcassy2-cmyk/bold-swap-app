@@ -1,20 +1,28 @@
 export default async function handler(req, res) {
+  // 1. Enable CORS for your frontend
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, 0x-api-key, 0x-version');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
   try {
-    const queryString = new URLSearchParams(req.query).toString();
-    const targetUrl = `https://api.0x.org/swap/permit2/quote?${queryString}`;
+    // 2. Extract query parameters passed from frontend
+    const queryParams = new URLSearchParams(req.query).toString();
+    const targetUrl = `https://api.0x.org/swap/permit2/quote?${queryParams}`;
 
+    // 3. Get API Key from Vercel environment variables
     const apiKey = process.env.VITE_ZEROX_API_KEY || process.env.ZEROX_API_KEY;
 
-    // The backend makes the request with BOTH required headers safely
+    if (!apiKey) {
+      return res.status(500).json({ error: "Missing 0x API Key in Vercel environment variables" });
+    }
+
+    // 4. Fetch quote from 0x API with v2 headers
     const response = await fetch(targetUrl, {
+      method: 'GET',
       headers: {
         '0x-api-key': apiKey,
         '0x-version': 'v2'
@@ -22,36 +30,11 @@ export default async function handler(req, res) {
     });
 
     const data = await response.json();
+
+    // 5. Pass response status and data back to frontend
     return res.status(response.status).json(data);
   } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-}export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  try {
-    const queryString = new URLSearchParams(req.query).toString();
-    const targetUrl = `https://api.0x.org/swap/permit2/quote?${queryString}`;
-
-    const apiKey = process.env.VITE_ZEROX_API_KEY || process.env.ZEROX_API_KEY;
-
-    // The backend makes the request with BOTH required headers safely
-    const response = await fetch(targetUrl, {
-      headers: {
-        '0x-api-key': apiKey,
-        '0x-version': 'v2'
-      }
-    });
-
-    const data = await response.json();
-    return res.status(response.status).json(data);
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+    console.error("Proxy Execution Error:", error);
+    return res.status(500).json({ error: "Internal Proxy Error", details: error.message });
   }
 }
