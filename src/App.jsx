@@ -372,6 +372,7 @@ const quoteUrl = `https://api.0x.org/swap/permit2/quote?${params.toString()}`;
 const response = await fetch(quoteUrl, {
   headers: {
     "0x-api-key": apiKey,
+    "0x-version": "v2"
   },
 });
 
