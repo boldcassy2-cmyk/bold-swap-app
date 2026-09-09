@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { BrowserProvider, Contract, parseUnits, formatUnits, isAddress } from 'ethers';
 import { useAccount, useConnect, useDisconnect, useBalance } from 'wagmi';
 import { calculateBlackScholes } from './utils/blackScholes';
+import { solveImpliedVolatility } from './utils/ivSolver';
 import PayoffChart from './components/PayoffChart';
 
 const MY_FEE_RECIPIENT = "0xfa06f50dFC00D333D29f56862a19d5a1c4F87490"; 
@@ -54,7 +55,7 @@ function TokenImage({ token, size = "w-6 h-6" }) {
 
 function App() {
   const { address: account, isConnected } = useAccount();
-  const { connect, connectors, pendingConnector } = useConnect();
+  const { connect, connectors } = useConnect();
   const { disconnect } = useDisconnect();
 
   const [tokens, setTokens] = useState(DEFAULT_TOKENS);
@@ -68,11 +69,16 @@ function App() {
   const [lastTxHash, setLastTxHash] = useState(null);
   const [txHistory, setTxHistory] = useState([]);
 
+  // Execution Order Type State: market, limit, or stop
+  const [orderType, setOrderType] = useState('market');
+  const [limitPrice, setLimitPrice] = useState('');
+  const [stopPrice, setStopPrice] = useState('');
+
   // Token Approval & Allowance State
   const [needApproval, setNeedApproval] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
 
-  // Custom Import & Modals
+  // Custom Import & Modals State
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
   const [slippage, setSlippage] = useState('0.5');
@@ -83,7 +89,7 @@ function App() {
   const [walletModalOpen, setWalletModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Black-Scholes Options Analytics State
+  // Black-Scholes Options & Newton-Raphson IV State
   const [bsModalOpen, setBsModalOpen] = useState(false);
   const [spotPrice, setSpotPrice] = useState(3000);
   const [strikePrice, setStrikePrice] = useState(3000);
@@ -91,6 +97,8 @@ function App() {
   const [volatility, setVolatility] = useState(50);
   const [riskFreeRate, setRiskFreeRate] = useState(5);
   const [selectedOptionType, setSelectedOptionType] = useState('call');
+  const [targetOptionPrice, setTargetOptionPrice] = useState('');
+  const [solvedIv, setSolvedIv] = useState(null);
 
   const [timeLeft, setTimeLeft] = useState(QUOTE_EXPIRY_SECONDS);
   const timerRef = useRef(null);
@@ -141,7 +149,7 @@ function App() {
     setQuote(null);
     setNeedApproval(false);
     if (timerRef.current) clearInterval(timerRef.current);
-  }, [sellToken, buyToken, sellAmount, slippage]);
+  }, [sellToken, buyToken, sellAmount, slippage, orderType, limitPrice, stopPrice]);
 
   // Quote Expiry Timer
   useEffect(() => {
@@ -237,13 +245,37 @@ function App() {
       } catch (err) {
         console.error("Token fetch error:", err);
         setImportError("Could not fetch ERC-20 token info.");
-      } font-mono {
+      } finally {
         setImporting(false);
       }
     };
 
     checkAndImportToken();
   }, [searchQuery, tokens]);
+
+  // Solves IV directly from target market option price using Newton-Raphson
+  const handleSolveIV = () => {
+    if (!targetOptionPrice || Number(targetOptionPrice) <= 0) {
+      setSolvedIv(null);
+      return;
+    }
+
+    const iv = solveImpliedVolatility({
+      targetPrice: Number(targetOptionPrice),
+      S: Number(spotPrice),
+      K: Number(strikePrice),
+      T: Math.max(0.001, Number(daysToExpiry) / 365),
+      r: Number(riskFreeRate) / 100,
+      optionType: selectedOptionType
+    });
+
+    if (iv !== null) {
+      setSolvedIv(iv.toFixed(2));
+      setVolatility(Math.round(iv));
+    } else {
+      setSolvedIv("Unable to converge");
+    }
+  };
 
   // Compute Black-Scholes Pricing & Greeks
   const bsResults = calculateBlackScholes({
@@ -320,6 +352,10 @@ function App() {
         slippageBps: slippageBps
       };
 
+      if (orderType === 'limit' && limitPrice) {
+        queryParams.price = limitPrice;
+      }
+
       if (MY_FEE_RECIPIENT && isAddress(MY_FEE_RECIPIENT)) {
         queryParams.swapFeeRecipient = MY_FEE_RECIPIENT;
         queryParams.swapFeeBps = "50";
@@ -327,13 +363,23 @@ function App() {
       }
 
       const params = new URLSearchParams(queryParams);
-      const response = await fetch(`/api-0x/swap/permit2/quote?${params.toString()}`);
 
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const rawText = await response.text();
-        throw new Error(`Server response error (${response.status}): ${rawText.slice(0, 100)}`);
-      }
+// 1. Get your 0x API key from .env
+const apiKey = import.meta.env.VITE_ZEROX_API_KEY;
+
+// 2. Fetch directly from official 0x API with v2 headers
+const response = await fetch(`https://api.0x.org/swap/permit2/quote?${params.toString()}`, {
+  headers: {
+    '0x-api-key': apiKey,
+    '0x-version': 'v2'
+  }
+});
+
+const contentType = response.headers.get("content-type");
+if (!contentType || !contentType.includes("application/json")) {
+  const rawText = await response.text();
+  throw new Error(`Server response error (${response.status}): ${rawText.slice(0, 100)}`);
+}
 
       const data = await response.json();
 
@@ -344,7 +390,7 @@ function App() {
 
       setQuote(data);
       setTimeLeft(QUOTE_EXPIRY_SECONDS);
-      setStatus("Quote updated!");
+      setStatus(orderType === 'limit' ? "Limit order prepared!" : "Quote updated!");
     } catch (err) {
       console.error("Quote Error:", err);
       setStatus(`Quote Error: ${err.message}`);
@@ -369,7 +415,7 @@ function App() {
       await tx.wait();
 
       setNeedApproval(false);
-      setStatus(`${sellToken.symbol} Approved! You can now execute the swap.`);
+      setStatus(`${sellToken.symbol} Approved! You can now execute the order.`);
     } catch (err) {
       console.error("Approval Error:", err);
       setStatus(`Approval Failed: ${err.reason || err.message}`);
@@ -406,10 +452,11 @@ function App() {
 
       await tx.wait();
 
-      setStatus('Swap executed successfully! 🎉');
+      setStatus('Order executed successfully! 🎉');
 
       const newTxRecord = {
         hash: tx.hash,
+        type: orderType.toUpperCase(),
         sellSymbol: sellToken.symbol,
         buySymbol: buyToken.symbol,
         sellAmount: sellAmount,
@@ -448,13 +495,13 @@ function App() {
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
         
         {/* Header */}
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-center mb-4">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">Bold Swap</h1>
+            <h1 className="text-xl font-bold bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent">Bold Terminal</h1>
             <button 
               onClick={() => setBsModalOpen(true)}
               className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-cyan-400 transition-colors cursor-pointer text-sm"
-              title="Black-Scholes Options Calculator"
+              title="Black-Scholes & IV Solver"
             >
               📈
             </button>
@@ -491,6 +538,40 @@ function App() {
           )}
         </div>
 
+        {/* Order Type Selector */}
+        <div className="grid grid-cols-3 gap-1 bg-slate-950 p-1 rounded-xl mb-4 border border-slate-800 font-mono text-xs">
+          {['market', 'limit', 'stop'].map((type) => (
+            <button
+              key={type}
+              onClick={() => setOrderType(type)}
+              className={`py-1.5 rounded-lg capitalize font-bold transition-all cursor-pointer ${
+                orderType === type
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {type}
+            </button>
+          ))}
+        </div>
+
+        {/* Limit / Stop Price Inputs */}
+        {orderType !== 'market' && (
+          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-4 space-y-1 font-mono">
+            <div className="flex justify-between text-xs text-slate-400">
+              <span>{orderType === 'limit' ? 'Target Limit Price' : 'Stop-Loss Price'}</span>
+              <span>In {buyToken.symbol}</span>
+            </div>
+            <input
+              type="number"
+              placeholder={`Enter ${orderType} price...`}
+              value={orderType === 'limit' ? limitPrice : stopPrice}
+              onChange={(e) => orderType === 'limit' ? setLimitPrice(e.target.value) : setStopPrice(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+        )}
+
         {/* You Pay Box */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
           <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
@@ -526,13 +607,13 @@ function App() {
           </div>
         </div>
 
-        {/* Direction Switcher Button */}
+        {/* Switch Tokens Button */}
         <div className="flex justify-center -my-3 z-10 relative">
           <button
             type="button"
             onClick={handleSwitchTokens}
             className="bg-slate-800 hover:bg-slate-700 border border-slate-700 text-indigo-400 p-2 rounded-xl transition-all cursor-pointer shadow-lg hover:scale-110 active:scale-95"
-            title="Switch Swap Direction"
+            title="Switch Direction"
           >
             ⇅
           </button>
@@ -574,7 +655,7 @@ function App() {
           </div>
         )}
 
-        {/* Slippage & Gas Estimate Summary */}
+        {/* Slippage & Gas Summary */}
         <div className="flex justify-between items-center text-xs text-slate-400 px-1 mb-3 font-mono">
           <span>Slippage: <strong className="text-indigo-400">{slippage}%</strong></span>
           {quote?.transaction?.gas && (
@@ -610,7 +691,7 @@ function App() {
             disabled={loading}
             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-emerald-600/20"
           >
-            {loading ? 'Fetching Quote...' : 'Get Quote'}
+            {loading ? 'Fetching Route...' : `Submit ${orderType.toUpperCase()} Order`}
           </button>
         ) : needApproval ? (
           <button 
@@ -626,11 +707,11 @@ function App() {
             disabled={loading}
             className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white font-bold py-3 rounded-xl mb-3 cursor-pointer transition-colors shadow-lg shadow-indigo-600/20"
           >
-            {loading ? 'Processing Swap...' : 'Execute Swap'}
+            {loading ? 'Processing Order...' : `Execute ${orderType.toUpperCase()} Order`}
           </button>
         )}
 
-        {/* Active Quote Refresh Panel */}
+        {/* Active Quote Timer */}
         {quote && (
           <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-3 space-y-2">
             <div className="flex justify-between items-center text-xs font-mono text-slate-400">
@@ -671,15 +752,40 @@ function App() {
         )}
       </div>
 
-      {/* BLACK-SCHOLES OPTIONS MODAL */}
+      {/* BLACK-SCHOLES & NEWTON-RAPHSON IV SOLVER MODAL */}
       {bsModalOpen && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-800 w-full max-w-lg rounded-2xl p-5 shadow-2xl space-y-4 my-8">
             <div className="flex justify-between items-center">
               <h2 className="text-base font-bold bg-gradient-to-r from-cyan-400 to-indigo-400 bg-clip-text text-transparent">
-                Black-Scholes Options Engine & Payoff
+                Black-Scholes & Newton-Raphson IV Solver
               </h2>
               <button onClick={() => setBsModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
+            </div>
+
+            {/* Newton-Raphson IV Direct Solver Panel */}
+            <div className="bg-slate-950 border border-cyan-500/30 rounded-xl p-3 space-y-2 font-mono">
+              <span className="text-xs font-bold text-cyan-400 block">⚡ Solve Implied Volatility from Market Price</span>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  placeholder="Market Option Price ($)"
+                  value={targetOptionPrice}
+                  onChange={(e) => setTargetOptionPrice(e.target.value)}
+                  className="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs focus:outline-none focus:border-cyan-500"
+                />
+                <button
+                  onClick={handleSolveIV}
+                  className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-3 py-2 rounded-lg transition-colors cursor-pointer"
+                >
+                  Solve IV
+                </button>
+              </div>
+              {solvedIv && (
+                <p className="text-xs text-emerald-400 font-bold">
+                  Solved Implied Volatility: <span className="text-white">{solvedIv}%</span>
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -794,30 +900,130 @@ function App() {
         </div>
       )}
 
+      {/* TOKEN SELECTOR MODAL */}
+      {modalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-slate-200">Select Token</h3>
+              <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-white font-bold cursor-pointer">✕</button>
+            </div>
+            <input
+              type="text"
+              placeholder="Search symbol, name or paste 0x address..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+            />
+            {importing && <p className="text-xs text-indigo-400 font-mono">Fetching token details...</p>}
+            {importError && <p className="text-xs text-rose-400 font-mono">{importError}</p>}
+            <div className="max-h-60 overflow-y-auto space-y-1 pr-1">
+              {filteredTokens.map((t) => (
+                <button
+                  key={t.address}
+                  onClick={() => selectToken(t)}
+                  className="w-full flex items-center justify-between p-2 hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-left"
+                >
+                  <div className="flex items-center gap-2">
+                    <TokenImage token={t} size="w-6 h-6" />
+                    <div>
+                      <p className="text-sm font-bold text-slate-200">{t.symbol}</p>
+                      <p className="text-[10px] text-slate-400">{t.name}</p>
+                    </div>
+                  </div>
+                  {t.isCustom && <span className="text-[9px] bg-indigo-950 text-indigo-400 px-1.5 py-0.5 rounded font-mono">Custom</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SLIPPAGE SETTINGS MODAL */}
+      {settingsModalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-xs rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-slate-200">Slippage Tolerance</h3>
+              <button onClick={() => setSettingsModalOpen(false)} className="text-slate-400 hover:text-white font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 font-mono text-xs">
+              {['0.1', '0.5', '1.0'].map((val) => (
+                <button
+                  key={val}
+                  onClick={() => setSlippage(val)}
+                  className={`py-2 rounded-xl border transition-all cursor-pointer ${
+                    slippage === val
+                      ? 'bg-indigo-600 border-indigo-500 text-white font-bold'
+                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  {val}%
+                </button>
+              ))}
+            </div>
+            <div>
+              <label className="text-xs text-slate-400 font-mono">Custom Slippage (%)</label>
+              <input
+                type="number"
+                value={slippage}
+                onChange={(e) => setSlippage(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-xs font-mono mt-1 text-slate-100 focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WALLET CONNECT MODAL */}
+      {walletModalOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-xs rounded-2xl p-5 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-slate-200">Connect Wallet</h3>
+              <button onClick={() => setWalletModalOpen(false)} className="text-slate-400 hover:text-white font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="space-y-2">
+              {connectors.map((connector) => (
+                <button
+                  key={connector.id}
+                  onClick={() => { connect({ connector }); setWalletModalOpen(false); }}
+                  className="w-full bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl p-3 text-sm font-bold text-slate-200 cursor-pointer transition-colors text-left flex justify-between items-center"
+                >
+                  <span>{connector.name}</span>
+                  <span className="text-xs text-indigo-400">→</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* TRANSACTION HISTORY MODAL */}
       {historyModalOpen && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-base font-bold">Recent Swaps</h2>
-              <button onClick={() => setHistoryModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-slate-200">Recent Transactions</h3>
+              <button onClick={() => setHistoryModalOpen(false)} className="text-slate-400 hover:text-white font-bold cursor-pointer">✕</button>
             </div>
-
             {txHistory.length === 0 ? (
-              <p className="text-xs text-slate-500 text-center py-6 font-mono">No recent transactions.</p>
+              <p className="text-xs text-slate-500 font-mono text-center py-4">No recent transactions recorded.</p>
             ) : (
-              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+              <div className="max-h-60 overflow-y-auto space-y-2 font-mono text-xs pr-1">
                 {txHistory.map((tx, idx) => (
-                  <div key={idx} className="bg-slate-950 border border-slate-800/80 p-3 rounded-xl flex justify-between items-center text-xs">
+                  <div key={idx} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between items-center">
                     <div>
-                      <p className="font-bold text-slate-200">{tx.sellAmount} {tx.sellSymbol} ➔ {Number(tx.buyAmount).toFixed(4)} {tx.buySymbol}</p>
-                      <p className="text-[10px] text-slate-500 font-mono">{tx.timestamp}</p>
+                      <p className="font-bold text-slate-200">
+                        {tx.type ? `[${tx.type}] ` : ''}{tx.sellAmount} {tx.sellSymbol} → {Number(tx.buyAmount).toFixed(4)} {tx.buySymbol}
+                      </p>
+                      <p className="text-[10px] text-slate-500">{tx.timestamp}</p>
                     </div>
-                    <a 
+                    <a
                       href={`https://basescan.org/tx/${tx.hash}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-indigo-400 hover:text-indigo-300 font-mono text-[10px] underline"
+                      className="text-indigo-400 hover:text-indigo-300 text-xs underline shrink-0"
                     >
                       BaseScan ↗
                     </a>
@@ -828,136 +1034,6 @@ function App() {
           </div>
         </div>
       )}
-
-      {/* SLIPPAGE SETTINGS MODAL */}
-      {settingsModalOpen && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-xs rounded-2xl p-5 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-base font-bold">Swap Settings</h2>
-              <button onClick={() => setSettingsModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
-            </div>
-
-            <p className="text-xs text-slate-400 mb-3">Slippage Tolerance</p>
-            <div className="grid grid-cols-4 gap-2 mb-4">
-              {['0.1', '0.5', '1.0'].map((preset) => (
-                <button
-                  key={preset}
-                  onClick={() => setSlippage(preset)}
-                  className={`py-2 text-xs font-bold rounded-xl border transition-colors cursor-pointer ${
-                    slippage === preset 
-                      ? 'bg-indigo-600 border-indigo-500 text-white' 
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-                  }`}
-                >
-                  {preset}%
-                </button>
-              ))}
-              <div className="relative">
-                <input
-                  type="number"
-                  placeholder="Custom"
-                  value={['0.1', '0.5', '1.0'].includes(slippage) ? '' : slippage}
-                  onChange={(e) => setSlippage(e.target.value)}
-                  className="w-full h-full bg-slate-950 border border-slate-800 text-xs text-center rounded-xl focus:outline-none focus:border-indigo-500 font-bold"
-                />
-              </div>
-            </div>
-
-            <button
-              onClick={() => setSettingsModalOpen(false)}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-xs font-bold py-2.5 rounded-xl transition-colors cursor-pointer"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* WALLET SELECTION MODAL */}
-      {walletModalOpen && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-sm rounded-2xl p-5 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-base font-bold">Select Wallet</h2>
-              <button onClick={() => setWalletModalOpen(false)} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
-            </div>
-
-            <div className="space-y-2">
-              {connectors.map((connector) => (
-                <button
-                  key={connector.uid}
-                  onClick={() => {
-                    connect({ connector });
-                    setWalletModalOpen(false);
-                  }}
-                  className="w-full p-3 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-left font-bold text-sm flex justify-between items-center transition-colors cursor-pointer"
-                >
-                  <span>{connector.name}</span>
-                  {pendingConnector?.uid === connector.uid && (
-                    <span className="text-xs text-indigo-400 animate-pulse">Connecting...</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TOKEN SELECTOR MODAL */}
-      {modalOpen && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl p-5 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-base font-bold">Select Token</h2>
-              <button onClick={() => { setModalOpen(false); setImportError(''); }} className="text-slate-400 hover:text-white text-lg font-bold cursor-pointer">✕</button>
-            </div>
-
-            <input 
-              type="text" 
-              placeholder="Search name or paste address (0x...)" 
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 text-sm rounded-xl p-3 mb-2 focus:outline-none focus:border-indigo-500 font-mono text-slate-100"
-            />
-
-            {importing && (
-              <p className="text-xs text-indigo-400 font-mono mb-3 animate-pulse">Fetching token contract details...</p>
-            )}
-
-            {importError && (
-              <p className="text-xs text-rose-400 font-mono mb-3">{importError}</p>
-            )}
-
-            <div className="max-h-64 overflow-y-auto space-y-2 pr-1 mt-3">
-              {filteredTokens.map((token) => (
-                <div 
-                  key={token.address}
-                  onClick={() => selectToken(token)}
-                  className="p-3 bg-slate-950 hover:bg-slate-800 rounded-xl cursor-pointer flex justify-between items-center transition-colors border border-slate-800/50"
-                >
-                  <div className="flex items-center gap-3">
-                    <TokenImage token={token} size="w-7 h-7" />
-                    <div>
-                      <div className="flex items-center gap-1.5">
-                        <p className="text-sm font-bold">{token.symbol}</p>
-                        {token.isCustom && (
-                          <span className="bg-indigo-500/20 text-indigo-400 text-[9px] font-bold px-1.5 py-0.5 rounded">Custom</span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-400">{token.name}</p>
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-mono text-slate-500">
-                    {token.address === NATIVE_ETH ? 'Native' : `${token.address.slice(0, 6)}...${token.address.slice(-4)}`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
     </div>
   );
 }
