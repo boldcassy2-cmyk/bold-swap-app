@@ -364,29 +364,18 @@ function App() {
 
       const params = new URLSearchParams(queryParams);
 
-// 1. Get your 0x API key from .env
-const apiKey = import.meta.env.VITE_ZEROX_API_KEY;
+      const response = await fetch(`/api/quote?${params.toString()}`);
 
-// 2. Fetch directly from official 0x API with v2 headers
-const quoteUrl = `https://api.0x.org/swap/permit2/quote?${params.toString()}`;
-const response = await fetch(quoteUrl, {
-  headers: {
-    "0x-api-key": apiKey,
-    "0x-version": "v2"
-  },
-});
-
-const contentType = response.headers.get("content-type");
-if (!contentType || !contentType.includes("application/json")) {
-  const rawText = await response.text();
-  throw new Error(`Server response error (${response.status}): ${rawText.slice(0, 100)}`);
-}
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const rawText = await response.text();
+        throw new Error(`Server response error (${response.status}): ${rawText.slice(0, 100)}`);
+      }
 
       const data = await response.json();
 
-      if (!response.ok || data.errors || data.reason) {
-        const errorMsg = data.details?.reason || data.reason || data.message || `API Error ${response.status}`;
-        throw new Error(errorMsg);
+      if (!response.ok) {
+        throw new Error(data.reason || data.error || `Server response error (${response.status})`);
       }
 
       setQuote(data);
