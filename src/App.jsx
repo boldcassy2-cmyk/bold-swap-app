@@ -368,10 +368,10 @@ function App() {
 const apiKey = import.meta.env.VITE_ZEROX_API_KEY;
 
 // 2. Fetch directly from official 0x API with v2 headers
-const response = await fetch(`https://api.0x.org/swap/permit2/quote?${params.toString()}`, {
+const quoteUrl = `https://api.0x.org/swap/permit2/quote?${params.toString()}`;
+const response = await fetch(quoteUrl, {
   headers: {
-    '0x-api-key': apiKey,
-    '0x-version': 'v2'
+    '0x-api-key': apiKey
   }
 });
 
