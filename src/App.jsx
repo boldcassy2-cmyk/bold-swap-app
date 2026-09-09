@@ -544,24 +544,25 @@ function App() {
             </button>
           ))}
         </div>
-
-        {/* Limit / Stop Price Inputs */}
-        {orderType !== 'market' && (
-          <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-4 space-y-1 font-mono">
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>{orderType === 'limit' ? 'Target Limit Price' : 'Stop-Loss Price'}</span>
-              <span>In {buyToken.symbol}</span>
-            </div>
-            <input
-              type="number"
-              placeholder={`Enter ${orderType} price...`}
-              value={orderType === 'limit' ? limitPrice : stopPrice}
-              onChange={(e) => orderType === 'limit' ? setLimitPrice(e.target.value) : setStopPrice(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-            />
-          </div>
-        )}
-
+{/* Limit / Stop Price Inputs */}
+{orderType !== 'market' && (
+  <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 mb-4 space-y-1 font-mono">
+    <div className="flex justify-between text-xs text-slate-400">
+      <span>{orderType === 'limit' ? 'Target Limit Price' : 'Stop-Loss Price'}</span>
+      <span>In {buyToken.symbol}</span>
+    </div>
+    <input
+      id={orderType === 'limit' ? 'limit-price-input' : 'stop-price-input'}
+      name={orderType === 'limit' ? 'limitPrice' : 'stopPrice'}
+      type="number"
+      placeholder={`Enter ${orderType} price...`}
+      value={orderType === 'limit' ? limitPrice : stopPrice}
+      onChange={(e) => orderType === 'limit' ? setLimitPrice(e.target.value) : setStopPrice(e.target.value)}
+      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+    />
+  </div>
+)}
+       
         {/* You Pay Box */}
         <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
           <div className="flex justify-between items-center text-xs text-slate-400 mb-2">
@@ -579,13 +580,15 @@ function App() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <input 
-              type="number" 
-              value={sellAmount} 
-              onChange={(e) => setSellAmount(e.target.value)}
-              className="w-full bg-transparent text-2xl font-bold focus:outline-none"
-              placeholder="0.0"
-            />
+           <input 
+  id="sell-amount-input"
+  name="sellAmount"
+  type="number" 
+  value={sellAmount} 
+  onChange={(e) => setSellAmount(e.target.value)}
+  className="w-full bg-transparent text-2xl font-bold focus:outline-none"
+  placeholder="0.0"
+/>
             <button 
               onClick={() => { setModalMode('sell'); setModalOpen(true); }}
               className="bg-slate-800 hover:bg-slate-700 text-sm font-bold border border-slate-700 rounded-xl px-3 py-1.5 cursor-pointer flex items-center gap-2 transition-colors shrink-0"
